@@ -9,6 +9,10 @@ from binance.enums import *
 
 
 TIMEFRAME = '15m'
+STOP_LOSS_PERCENTAGE = 0.005
+TAKE_PROFIT_PERCENTAGE = 0.01
+SYMBOL = 'ETH/USDT'
+
 pd.set_option("display.max_rows", None, "display.max_columns", None)
 
 
@@ -18,11 +22,14 @@ class CryptoBot:
             'apiKey': config.API_KEY,
             'secret': config.SECRET_KEY,
         })
+
+        # Init defaults
         self.in_position = False
+        self.in_margin_trade = False
 
         # initialise the client
         self.client = Client(config.API_KEY, config.SECRET_KEY)
-
+        self.USDT_balance = self.client.get_max_margin_transfer(asset='USDT')['amount']
 
     def true_range(self):
         self.add_true_range_to_data_frame(self.calculate_true_range())
@@ -77,37 +84,107 @@ class CryptoBot:
                 if not self.df[trend_type][current] and self.df['upperband' + trend_type][current] > self.df['upperband' + trend_type][previous]:
                     self.df.at[current, 'upperband' + trend_type] = self.df['upperband' + trend_type][previous]
 
+    def fetch_candles(self):
+        return self.exchange.fetch_ohlcv(SYMBOL, timeframe=TIMEFRAME, limit=100)
+
+    def check_get_into_trade_opportunities(self):
+
+        # long
+        if self.get_into_long_position():
+           # print('buy order')
+           # print(self.df.tail(4))
+            self.in_position = True
+            self.handle_order()
+
+        # short
+        if self.get_into_short_position():
+           # print('sell order')
+           # print(self.df.tail(4))
+            self.in_position = True
+            self.in_margin_trade = True
+            self.handle_order()
+
+    def create_order(self, symbol,  side, amount):
+        return self.client.create_order(symbol=symbol, side=side, amount=amount)
+
+    def create_margin_order(self, symbol,  side, amount):
+        return self.client.create_margin_order(symbol=symbol, side=side, type=ORDER_TYPE_MARKET, quantity=0.01)
+
+    def handle_order(self):
+        if self.in_position:
+            if self.in_margin_trade:
+                self.short_handler()
+
+            else:
+                self.long_handler()
+
+    def short_handler(self):
+        print('margin')
+        #enter order
+        '''
+
+        1. fetch balance
+        2. calc amount of USDT/ETH
+        3. make loan of amount
+        4. check res fees 
+        5. sell order 
+        6. save amount - fees
+        
+        '''
+
+    def long_handler(self):
+        # enter order
+        self.set_free_USDT_balance_on_account()
+        amount_ETH_to_buy = format(self.calculate_max_amount_of_ETH_USDT(), ".8f")
+
+        print(amount_ETH_to_buy)
+        # print min amount to buy of ETH/USDT
+        #info = self.client.get_symbol_info('ETHUSDT')
+        #print(info)
+
+        response = self.create_margin_order('ETHUSDT', SIDE_BUY, amount_ETH_to_buy)
+        print(response)
+
+
+        '''
+        1. fetch balance
+        2. calc amount of USDT/ETH
+        3. make order
+        4. from response save (the amount - fees )   
+        '''
+
+    def set_free_USDT_balance_on_account(self):
+        self.USDT_balance = self.client.get_max_margin_transfer(asset='USDT')['amount']
+
+    def calculate_max_amount_of_ETH_USDT(self):
+        last_row_index = len(self.df.index) - 1
+        return float(self.USDT_balance) / float(self.df['close'][last_row_index].astype('float'))
+
+    def get_into_long_position(self):
+        last_row_index = len(self.df.index) - 1
+        previous_last_row_index = last_row_index - 1
+
+        return (not self.df['_short_trend'][last_row_index] and self.df['_short_trend'][previous_last_row_index] and not self.df['_long_trend'][last_row_index] and not self.in_position) or (not self.df['_long_trend'][last_row_index] and self.df['_long_trend'][previous_last_row_index] and not self.df['_short_trend'][last_row_index] and not self.in_position)
+
+    def get_into_short_position(self):
+        last_row_index = len(self.df.index) - 1
+        previous_last_row_index = last_row_index - 1
+
+        return (not self.df['_short_trend'][last_row_index] and self.df['_short_trend'][previous_last_row_index] and not self.df['_long_trend'][last_row_index] and not self.in_position) or (not self.df['_long_trend'][last_row_index] and self.df['_long_trend'][previous_last_row_index] and not self.df['_short_trend'][last_row_index] and not self.in_position)
+
     def run_bot(self):
-        bars = self.exchange.fetch_ohlcv('ETH/USDT', timeframe=TIMEFRAME, limit=100)
-        self.df = pd.DataFrame(bars, columns=['timestamp', 'open', 'high', 'low', 'close', ' volume'])
+        self.df = pd.DataFrame(self.fetch_candles(), columns=['timestamp', 'open', 'high', 'low', 'close', ' volume'])
         self.df['timestamp'] = pd.to_datetime(self.df['timestamp'], unit='ms')
         self.true_range()
 
         self.supertrend('_short_trend')
         self.supertrend('_long_trend', 20, 5)
 
-        self.check_buy_sell_signals()
+        self.check_get_into_trade_opportunities()
 
-    def check_buy_sell_signals(self):
-        last_row_index = len(self.df.index) - 1
-        previous_last_row_index = last_row_index - 1
-        if (self.df['_short_trend'][last_row_index] and not self.df['_short_trend'][previous_last_row_index] and self.df['_long_trend'][last_row_index] and not self.in_position ) or ( self.df['_long_trend'][last_row_index] and not self.df['_long_trend'][previous_last_row_index] and self.df['_short_trend'][last_row_index] and not self.in_position):
-            print('buy order')
-            print(self.df.tail(4))
-            self.in_position = True
+        print('long')
+        self.long_handler()
 
-        if (not self.df['_short_trend'][last_row_index] and self.df['_short_trend'][previous_last_row_index] and not self.df['_long_trend'][last_row_index] and not self.in_position) or (not self.df['_long_trend'][last_row_index] and self.df['_long_trend'][previous_last_row_index] and not self.df['_short_trend'][last_row_index] and not self.in_position):
-            print('sell order')
-            print(self.df.tail(4))
-            self.in_position = False
-
-    async def create_order(self, symbol,  side, amount):
-        await self.client.create_order(symbol=symbol, side=side, amount=amount)
-
-    async def create_margin_order(self, symbol,  side, amount):
-        await self.exchange.create_order(symbol, side, amount, {
-            'type': 'margin',
-        })
 
 
 def searching():
