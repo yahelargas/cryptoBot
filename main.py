@@ -110,7 +110,6 @@ class CryptoBot:
         })
 
 
-
 def searching():
     print("searching...")
 
