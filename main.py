@@ -18,6 +18,7 @@ pd.set_option("display.max_rows", None, "display.max_columns", None)
 
 class CryptoBot:
     def __init__(self):
+        self.stop_loss_take_profit_of_trade = None
         self.exchange = ccxt.binance({
             'apiKey': config.API_KEY,
             'secret': config.SECRET_KEY,
@@ -25,7 +26,7 @@ class CryptoBot:
 
         # Init defaults
         self.in_position = False
-        self.in_margin_trade = False
+        self.in_margin_short_trade = False
 
         # initialise the client
         self.client = Client(config.API_KEY, config.SECRET_KEY)
@@ -91,36 +92,43 @@ class CryptoBot:
 
         # long
         if self.get_into_long_position():
-           # print('buy order')
-           # print(self.df.tail(4))
-            self.in_position = True
             self.handle_order()
 
         # short
         if self.get_into_short_position():
-           # print('sell order')
-           # print(self.df.tail(4))
-            self.in_position = True
-            self.in_margin_trade = True
+            self.in_margin_short_trade = True
             self.handle_order()
 
-    def create_order(self, symbol,  side, amount):
-        return self.client.create_order(symbol=symbol, side=side, amount=amount)
+    def stop_loss_take_profit_of_trade(self):
+        if self.in_position:
+            last_row_index = len(self.df.index) - 1
+            curr_price = self.df['close'][last_row_index]
+            # long
+            if self.side == SIDE_BUY:
+                if curr_price >= (self.entry_price * (1 + TAKE_PROFIT_PERCENTAGE)) or curr_price <= (self.entry_price * (1 - STOP_LOSS_PERCENTAGE)):
+                    self.in_position = False
+                    self.client.create_margin_order('ETHUSDT', SIDE_SELL, self.amount)
+                    self.stop_loss_take_profit_of_trade = self.df[''][last_row_index]
+
+            # short
+            elif self.side == SIDE_SELL and self.in_margin_short_trade:
+                print('short stop loss take profit')
 
     def create_margin_order(self, symbol,  side, amount):
         return self.client.create_margin_order(symbol=symbol, side=side, type=ORDER_TYPE_MARKET, quantity=0.01)
 
     def handle_order(self):
-        if self.in_position:
-            if self.in_margin_trade:
-                self.short_handler()
-
-            else:
-                self.long_handler()
+        if self.in_margin_short_trade:
+            self.short_handler()
+        else:
+             self.long_handler()
 
     def short_handler(self):
         print('margin')
-        #enter order
+        # enter order
+        # self.set_free_USDT_balance_on_account()
+        # amount_ETH_to_buy = format(self.calculate_max_amount_of_ETH_USDT(), ".8f")
+        # self.client.create_margin_loan()
         '''
 
         1. fetch balance
@@ -133,18 +141,29 @@ class CryptoBot:
         '''
 
     def long_handler(self):
-        # enter order
-        self.set_free_USDT_balance_on_account()
-        amount_ETH_to_buy = format(self.calculate_max_amount_of_ETH_USDT(), ".8f")
+        if not self.in_position:
+            # enter order
+            last_row_index = len(self.df.index) - 1
 
-        print(amount_ETH_to_buy)
-        # print min amount to buy of ETH/USDT
-        #info = self.client.get_symbol_info('ETHUSDT')
-        #print(info)
+            self.set_free_USDT_balance_on_account()
+            amount_ETH_to_buy = format(self.calculate_max_amount_of_ETH_USDT(), ".8f")
 
-        response = self.create_margin_order('ETHUSDT', SIDE_BUY, amount_ETH_to_buy)
-        print(response)
+            print(amount_ETH_to_buy)
+            # print min amount to buy of ETH/USDT
+            #info = self.client.get_symbol_info('ETHUSDT')
+            #print(info)
 
+            response = self.create_margin_order('ETHUSDT', SIDE_BUY, amount_ETH_to_buy)
+            self.entry_price = float(response['fills'][0]['price'])
+            self.amount = float(response['fills'][0]['qty']) - float(response['fills'][0]['commission'])
+            self.side = response['side']
+            self.candle_of_entring_to_trade = self.df['timestamp'][last_row_index]
+
+            self.in_position = True
+
+            self.stop_loss_take_profit_of_trade()
+
+            print(response)
 
         '''
         1. fetch balance
@@ -161,13 +180,13 @@ class CryptoBot:
         return float(self.USDT_balance) / float(self.df['close'][last_row_index].astype('float'))
 
     def get_into_long_position(self):
-        last_row_index = len(self.df.index) - 1
+        last_row_index = len(self.df.index) - 2
         previous_last_row_index = last_row_index - 1
 
         return (not self.df['_short_trend'][last_row_index] and self.df['_short_trend'][previous_last_row_index] and not self.df['_long_trend'][last_row_index] and not self.in_position) or (not self.df['_long_trend'][last_row_index] and self.df['_long_trend'][previous_last_row_index] and not self.df['_short_trend'][last_row_index] and not self.in_position)
 
     def get_into_short_position(self):
-        last_row_index = len(self.df.index) - 1
+        last_row_index = len(self.df.index) - 2
         previous_last_row_index = last_row_index - 1
 
         return (not self.df['_short_trend'][last_row_index] and self.df['_short_trend'][previous_last_row_index] and not self.df['_long_trend'][last_row_index] and not self.in_position) or (not self.df['_long_trend'][last_row_index] and self.df['_long_trend'][previous_last_row_index] and not self.df['_short_trend'][last_row_index] and not self.in_position)
@@ -181,6 +200,7 @@ class CryptoBot:
         self.supertrend('_long_trend', 20, 5)
 
         self.check_get_into_trade_opportunities()
+        self.stop_loss_take_profit_of_trade()
 
         print('long')
         self.long_handler()
